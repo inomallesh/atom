@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ATOM</title>
+
+<!-- MediaPipe Pose -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg:        #060810;
+    --panel:     #0d1117;
+    --border:    #1a2535;
+    --cyan:      #00e5ff;
+    --cyan-dim:  #007a99;
+    --orange:    #ff6b35;
+    --green:     #39ff14;
+    --red:       #ff2d55;
+    --text:      #c8d8e8;
+    --text-dim:  #4a6070;
+    --mono:      'Share Tech Mono', monospace;
+    --display:   'Orbitron', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* scanline overlay */
+  body::after {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.08) 2px,
+      rgba(0,0,0,0.08) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 28px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(90deg, #060d18 0%, #090f1a 100%);
+  }
+
+  .logo {
+    font-family: var(--display);
+    font-size: 1.4rem;
+    font-weight: 900;
+    letter-spacing: 6px;
+    color: var(--cyan);
+    text-shadow: 0 0 20px rgba(0,229,255,0.5);
+  }
+
+  .logo span { color: var(--orange); }
+
+  .header-status {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    letter-spacing: 2px;
+  }
+
+  .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    display: inline-block;
+    transition: background 0.3s, box-shadow 0.3s;
+  }
+  .dot.active { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .dot.warn   { background: var(--orange); box-shadow: 0 0 8px var(--orange); }
+
+  .main {
+    display: grid;
+    grid-template-columns: 1fr 340px;
+    gap: 0;
+    height: calc(100vh - 57px);
+  }
+
+  /* ── LEFT: video panel ── */
+  .video-panel {
+    position: relative;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-right: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  video { display: none; }
+
+  #output-canvas {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  .overlay-label {
+    position: absolute;
+    top: 16px; left: 16px;
+    font-family: var(--display);
+    font-size: 0.6rem;
+    letter-spacing: 4px;
+    color: var(--cyan-dim);
+    background: rgba(6,8,16,0.7);
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+  }
+
+  .fps-display {
+    position: absolute;
+    top: 16px; right: 16px;
+    font-size: 0.7rem;
+    color: var(--cyan-dim);
+    background: rgba(6,8,16,0.7);
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    letter-spacing: 2px;
+  }
+
+  .no-feed {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    letter-spacing: 2px;
+  }
+
+  .no-feed svg { opacity: 0.3; }
+
+  /* ── RIGHT: data panel ── */
+  .data-panel {
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    overflow-y: auto;
+  }
+
+  .section {
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .section-title {
+    font-family: var(--display);
+    font-size: 0.58rem;
+    letter-spacing: 4px;
+    color: var(--cyan-dim);
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .section-title::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  /* angle card */
+  .angle-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .angle-card {
+    background: rgba(0,0,0,0.4);
+    border: 1px solid var(--border);
+    padding: 12px;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s;
+  }
+
+  .angle-card.active { border-color: var(--cyan-dim); }
+
+  .angle-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--cyan), transparent);
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+
+  .angle-card.updated::before {
+    opacity: 1;
+    animation: scan 0.4s ease-out;
+  }
+
+  @keyframes scan {
+    from { transform: scaleX(0); }
+    to   { transform: scaleX(1); }
+  }
+
+  .angle-label {
+    font-size: 0.62rem;
+    color: var(--text-dim);
+    letter-spacing: 2px;
+    margin-bottom: 6px;
+  }
+
+  .angle-value {
+    font-family: var(--display);
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--cyan);
+    text-shadow: 0 0 12px rgba(0,229,255,0.4);
+    line-height: 1;
+  }
+
+  .angle-value span {
+    font-size: 0.8rem;
+    color: var(--cyan-dim);
+    font-weight: 400;
+  }
+
+  /* arc gauge */
+  .gauge-wrap {
+    margin-top: 8px;
+  }
+
+  .gauge-bar {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 4px;
+  }
+
+  .gauge-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--cyan-dim), var(--cyan));
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.15s ease;
+  }
+
+  .gauge-fill.orange { background: linear-gradient(90deg, #994020, var(--orange)); }
+
+  .gauge-ticks {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.5rem;
+    color: var(--text-dim);
+    margin-top: 2px;
+  }
+
+  /* Firebase config */
+  .config-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .field-row {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .field-label {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    letter-spacing: 2px;
+  }
+
+  .field-input {
+    background: rgba(0,0,0,0.5);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 0.72rem;
+    padding: 7px 10px;
+    outline: none;
+    transition: border-color 0.2s;
+    width: 100%;
+  }
+
+  .field-input:focus { border-color: var(--cyan-dim); }
+  .field-input::placeholder { color: var(--text-dim); }
+
+  /* buttons */
+  .btn {
+    font-family: var(--display);
+    font-size: 0.65rem;
+    letter-spacing: 3px;
+    padding: 10px 16px;
+    border: none;
+    cursor: pointer;
+    transition: all 0.2s;
+    text-transform: uppercase;
+  }
+
+  .btn-primary {
+    background: var(--cyan);
+    color: #000;
+    width: 100%;
+    margin-top: 4px;
+  }
+
+  .btn-primary:hover {
+    background: #fff;
+    box-shadow: 0 0 20px rgba(0,229,255,0.5);
+  }
+
+  .btn-primary:disabled {
+    background: var(--text-dim);
+    cursor: not-allowed;
+    box-shadow: none;
+  }
+
+  .btn-danger {
+    background: transparent;
+    border: 1px solid var(--red);
+    color: var(--red);
+    width: 100%;
+    margin-top: 6px;
+  }
+
+  .btn-danger:hover {
+    background: var(--red);
+    color: #fff;
+  }
+
+  /* log */
+  .log-box {
+    background: #000;
+    border: 1px solid var(--border);
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    height: 90px;
+    overflow-y: auto;
+    padding: 8px;
+    line-height: 1.6;
+  }
+
+  .log-box .entry-ok   { color: var(--green); }
+  .log-box .entry-warn { color: var(--orange); }
+  .log-box .entry-err  { color: var(--red); }
+
+  /* write rate slider */
+  .slider-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+  }
+
+  input[type=range] {
+    -webkit-appearance: none;
+    flex: 1;
+    height: 3px;
+    background: var(--border);
+    outline: none;
+    border-radius: 2px;
+  }
+
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--cyan);
+    cursor: pointer;
+    box-shadow: 0 0 6px var(--cyan);
+  }
+
+  .slider-val {
+    font-size: 0.75rem;
+    color: var(--cyan);
+    min-width: 50px;
+    text-align: right;
+  }
+
+  .firebase-path-display {
+    font-size: 0.62rem;
+    color: var(--cyan-dim);
+    background: rgba(0,229,255,0.04);
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    word-break: break-all;
+    margin-top: 6px;
+    letter-spacing: 1px;
+  }
+
+  /* pulse animation on write */
+  @keyframes pulseWrite {
+    0%   { opacity: 1; }
+    50%  { opacity: 0.3; }
+    100% { opacity: 1; }
+  }
+
+  .writing { animation: pulseWrite 0.3s ease; }
+
+  /* pose confidence bar */
+  .confidence-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  .conf-label { font-size: 0.6rem; color: var(--text-dim); min-width: 80px; }
+
+  .conf-track {
+    flex: 1;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .conf-fill {
+    height: 100%;
+    background: var(--green);
+    border-radius: 2px;
+    transition: width 0.2s;
+  }
+
+  .conf-val {
+    font-size: 0.6rem;
+    color: var(--green);
+    min-width: 30px;
+    text-align: right;
+  }
+
+  /* scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+</style>
+</head>
+
+<body>
+
+<header>
+  <div class="logo">ATOM<span>.</span>INO</div>
+  <div class="header-status">
+    <div id="dot-cam"  class="dot"></div><span>CAMERA</span>
+    <div id="dot-pose" class="dot"></div><span>POSE</span>
+    <div id="dot-fb"   class="dot"></div><span>FIREBASE</span>
+  </div>
+</header>
+
+<div class="main">
+
+  <!-- ── VIDEO ── -->
+  <div class="video-panel">
+    <video id="webcam" playsinline autoplay></video>
+    <canvas id="output-canvas"></canvas>
+    <div class="overlay-label">LIVE FEED — POSE ESTIMATION</div>
+    <div class="fps-display" id="fps-display">-- FPS</div>
+    <div class="no-feed" id="no-feed">
+      <!-- camera icon -->
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+        <circle cx="12" cy="13" r="4"/>
+      </svg>
+      CAMERA NOT STARTED
+    </div>
+  </div>
+
+  <!-- ── DATA PANEL ── -->
+  <div class="data-panel">
+
+    <!-- Angles -->
+    <div class="section">
+      <div class="section-title">JOINT ANGLES</div>
+      <div class="angle-grid">
+
+        <div class="angle-card" id="card-ls">
+          <div class="angle-label">L SHOULDER</div>
+          <div class="angle-value" id="val-ls">---<span>°</span></div>
+          <div class="gauge-wrap">
+            <div class="gauge-bar"><div class="gauge-fill" id="bar-ls"></div></div>
+            <div class="gauge-ticks"><span>0°</span><span>90°</span><span>180°</span></div>
+          </div>
+        </div>
+
+        <div class="angle-card" id="card-rs">
+          <div class="angle-label">R SHOULDER</div>
+          <div class="angle-value" id="val-rs">---<span>°</span></div>
+          <div class="gauge-wrap">
+            <div class="gauge-bar"><div class="gauge-fill orange" id="bar-rs"></div></div>
+            <div class="gauge-ticks"><span>0°</span><span>90°</span><span>180°</span></div>
+          </div>
+        </div>
+
+        <div class="angle-card" id="card-le">
+          <div class="angle-label">L ELBOW</div>
+          <div class="angle-value" id="val-le">---<span>°</span></div>
+          <div class="gauge-wrap">
+            <div class="gauge-bar"><div class="gauge-fill" id="bar-le"></div></div>
+            <div class="gauge-ticks"><span>0°</span><span>90°</span><span>180°</span></div>
+          </div>
+        </div>
+
+        <div class="angle-card" id="card-re">
+          <div class="angle-label">R ELBOW</div>
+          <div class="angle-value" id="val-re">---<span>°</span></div>
+          <div class="gauge-wrap">
+            <div class="gauge-bar"><div class="gauge-fill orange" id="bar-re"></div></div>
+            <div class="gauge-ticks"><span>0°</span><span>90°</span><span>180°</span></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Visibility -->
+    <div class="section">
+      <div class="section-title">LANDMARK VISIBILITY</div>
+      <div class="confidence-bar">
+        <span class="conf-label">L SHOULDER</span>
+        <div class="conf-track"><div class="conf-fill" id="vis-ls" style="width:0%"></div></div>
+        <span class="conf-val" id="vis-ls-val">0%</span>
+      </div>
+      <div class="confidence-bar">
+        <span class="conf-label">R SHOULDER</span>
+        <div class="conf-track"><div class="conf-fill" id="vis-rs" style="width:0%"></div></div>
+        <span class="conf-val" id="vis-rs-val">0%</span>
+      </div>
+      <div class="confidence-bar">
+        <span class="conf-label">L ELBOW</span>
+        <div class="conf-track"><div class="conf-fill" id="vis-le" style="width:0%"></div></div>
+        <span class="conf-val" id="vis-le-val">0%</span>
+      </div>
+      <div class="confidence-bar">
+        <span class="conf-label">R ELBOW</span>
+        <div class="conf-track"><div class="conf-fill" id="vis-re" style="width:0%"></div></div>
+        <span class="conf-val" id="vis-re-val">0%</span>
+      </div>
+    </div>
+
+    <!-- Firebase Config -->
+    <div class="section">
+      <div class="section-title">FIREBASE CONFIG</div>
+      <div class="config-form">
+
+        <div class="field-row">
+          <label class="field-label">DATABASE URL</label>
+          <input class="field-input" id="fb-url" type="text"
+       		value="https://robot-47916-default-rtdb.firebaseio.com/"
+       		placeholder="https://your-project.firebaseio.com" />
+        </div>
+
+        <div class="field-row">
+          <label class="field-label">API KEY</label>
+          <input class="field-input" id="fb-key" type="password"
+       		value="AIzaSyBl9NpSpgsFMYbF-FB1LeH9LM5dWVBO1B4"
+       		placeholder="AIzaSy..." />
+        </div>
+
+        <div class="field-row">
+          <label class="field-label">PROJECT ID</label>
+          <input class="field-input" id="fb-pid" type="text"
+		value="robot-47916"
+            	placeholder="your-project-id" />
+        </div>
+
+        <div class="field-row">
+          <label class="field-label">DB PATH (node to write)</label>
+          <input class="field-input" id="fb-path" type="text"
+            value="arm_angles" />
+        </div>
+
+        <button class="btn btn-primary" id="btn-connect">CONNECT &amp; START</button>
+        <button class="btn btn-danger" id="btn-stop" style="display:none">STOP STREAMING</button>
+
+        <div class="firebase-path-display" id="fb-path-display">
+          Path: <em>not connected</em>
+        </div>
+      </div>
+    </div>
+
+    <!-- Write Rate -->
+    <div class="section">
+      <div class="section-title">WRITE RATE</div>
+      <div class="slider-row">
+        <span style="font-size:0.6rem;color:var(--text-dim)">INTERVAL</span>
+        <input type="range" id="rate-slider" min="50" max="2000" value="200" step="50" />
+        <span class="slider-val" id="rate-val">200ms</span>
+      </div>
+      <div style="font-size:0.6rem;color:var(--text-dim);margin-top:6px;letter-spacing:1px">
+        Lower = smoother robot motion, higher Firebase writes/sec
+      </div>
+    </div>
+
+    <!-- Log -->
+    <div class="section" style="flex:1;min-height:0">
+      <div class="section-title">SYSTEM LOG</div>
+      <div class="log-box" id="log-box"></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ────────────────────────────────────────────────────────────────────────────
+//  STATE
+// ────────────────────────────────────────────────────────────────────────────
+let pose       = null;
+let camera     = null;
+let db         = null;
+let dbRef      = null;
+let streaming  = false;
+let writeTimer = null;
+let latestAngles = {};
+let lastAnglesForWrite = null;
+let fpsCounter = 0;
+let fpsLast    = performance.now();
+let writeIntervalMs = 200;
+
+// ────────────────────────────────────────────────────────────────────────────
+//  UTILS
+// ────────────────────────────────────────────────────────────────────────────
+function angle3(A, B, C) {
+  // Angle at B formed by A-B-C (returns degrees)
+  const v1x = A.x - B.x, v1y = A.y - B.y, v1z = (A.z||0) - (B.z||0);
+  const v2x = C.x - B.x, v2y = C.y - B.y, v2z = (C.z||0) - (B.z||0);
+  const dot = v1x*v2x + v1y*v2y + v1z*v2z;
+  const m1  = Math.sqrt(v1x**2 + v1y**2 + v1z**2);
+  const m2  = Math.sqrt(v2x**2 + v2y**2 + v2z**2);
+  if (m1 === 0 || m2 === 0) return 0;
+  return Math.round(Math.acos(Math.max(-1, Math.min(1, dot / (m1 * m2)))) * 180 / Math.PI);
+}
+
+function log(msg, type='') {
+  const box  = document.getElementById('log-box');
+  const ts   = new Date().toLocaleTimeString('en-GB', { hour12: false });
+  const div  = document.createElement('div');
+  div.textContent = `[${ts}] ${msg}`;
+  if (type) div.classList.add(`entry-${type}`);
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  // keep max 80 lines
+  while (box.children.length > 80) box.removeChild(box.firstChild);
+}
+
+function setDot(id, state) {
+  const d = document.getElementById(id);
+  d.className = 'dot' + (state ? ` ${state}` : '');
+}
+
+function updateCard(id, val) {
+  const valEl = document.getElementById(`val-${id}`);
+  const barEl = document.getElementById(`bar-${id}`);
+  const card  = document.getElementById(`card-${id}`);
+  valEl.innerHTML = `${val}<span>°</span>`;
+  barEl.style.width = `${(val / 180) * 100}%`;
+  card.classList.add('active');
+  card.classList.remove('updated');
+  void card.offsetWidth;   // reflow for re-trigger
+  card.classList.add('updated');
+}
+
+function updateVis(id, val) {
+  const pct = Math.round(val * 100);
+  document.getElementById(`vis-${id}`).style.width   = pct + '%';
+  document.getElementById(`vis-${id}-val`).textContent = pct + '%';
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  POSE RESULT HANDLER
+// ────────────────────────────────────────────────────────────────────────────
+function onResults(results) {
+  const canvas = document.getElementById('output-canvas');
+  const ctx    = canvas.getContext('2d');
+
+  canvas.width  = results.image.width;
+  canvas.height = results.image.height;
+
+  ctx.save();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(results.image, 0, 0);
+
+  // FPS
+  fpsCounter++;
+  const now = performance.now();
+  if (now - fpsLast >= 1000) {
+    document.getElementById('fps-display').textContent = fpsCounter + ' FPS';
+    fpsCounter = 0;
+    fpsLast = now;
+  }
+
+  if (!results.poseLandmarks) {
+    ctx.restore();
+    setDot('dot-pose', 'warn');
+    return;
+  }
+
+  setDot('dot-pose', 'active');
+
+  // Draw pose skeleton
+  drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS,
+    { color: 'rgba(0,229,255,0.4)', lineWidth: 2 });
+  drawLandmarks(ctx, results.poseLandmarks,
+    { color: '#00e5ff', fillColor: 'rgba(0,0,0,0.6)', radius: 4, lineWidth: 1 });
+
+  const L = results.poseLandmarks;
+
+  // MediaPipe pose landmark indices
+  // 11:L_SHOULDER, 12:R_SHOULDER, 13:L_ELBOW, 14:R_ELBOW
+  // 15:L_WRIST,    16:R_WRIST,    23:L_HIP,   24:R_HIP
+
+  const LS = L[11], RS = L[12];
+  const LE = L[13], RE = L[14];
+  const LW = L[15], RW = L[16];
+  const LH = L[23], RH = L[24];
+
+  // Compute angles
+  const angleLElbow    = angle3(LS, LE, LW);  // shoulder→elbow→wrist
+  const angleRElbow    = angle3(RS, RE, RW);
+  const angleLShoulder = angle3(LE, LS, LH);  // elbow→shoulder→hip
+  const angleRShoulder = angle3(RE, RS, RH);
+
+  updateCard('le', angleLElbow);
+  updateCard('re', angleRElbow);
+  updateCard('ls', angleLShoulder);
+  updateCard('rs', angleRShoulder);
+
+  // Visibility
+  updateVis('ls', LS.visibility || 0);
+  updateVis('rs', RS.visibility || 0);
+  updateVis('le', LE.visibility || 0);
+  updateVis('re', RE.visibility || 0);
+
+  // Draw angle labels on canvas
+  const joints = [
+    { lm: LE, label: `L.E ${angleLElbow}°` },
+    { lm: RE, label: `R.E ${angleRElbow}°` },
+    { lm: LS, label: `L.S ${angleLShoulder}°` },
+    { lm: RS, label: `R.S ${angleRShoulder}°` },
+  ];
+
+  ctx.font = 'bold 13px Share Tech Mono, monospace';
+  ctx.shadowColor = '#000';
+  ctx.shadowBlur  = 4;
+
+  joints.forEach(({ lm, label }) => {
+    const x = lm.x * canvas.width;
+    const y = lm.y * canvas.height;
+    ctx.fillStyle = '#00e5ff';
+    ctx.fillText(label, x + 10, y - 8);
+  });
+
+  ctx.restore();
+
+  // Store for throttled write
+  latestAngles = {
+    left_elbow:    angleLElbow,
+    right_elbow:   angleRElbow,
+    left_shoulder: angleLShoulder,
+    right_shoulder: angleRShoulder,
+    timestamp: Date.now()
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  FIREBASE WRITE (throttled)
+// ────────────────────────────────────────────────────────────────────────────
+function startWriteLoop() {
+  if (writeTimer) clearInterval(writeTimer);
+  writeTimer = setInterval(() => {
+    if (!dbRef || !streaming || !latestAngles.timestamp) return;
+    if (JSON.stringify(latestAngles) === JSON.stringify(lastAnglesForWrite)) return;
+    lastAnglesForWrite = { ...latestAngles };
+
+    dbRef.set(latestAngles)
+      .then(() => {
+        setDot('dot-fb', 'active');
+        const pathDisplay = document.getElementById('fb-path-display');
+        pathDisplay.classList.add('writing');
+        setTimeout(() => pathDisplay.classList.remove('writing'), 200);
+      })
+      .catch(err => {
+        setDot('dot-fb', 'warn');
+        log('Write error: ' + err.message, 'err');
+      });
+  }, writeIntervalMs);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  INIT POSE
+// ────────────────────────────────────────────────────────────────────────────
+async function initPose() {
+  pose = new Pose({
+    locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+  });
+
+  pose.setOptions({
+    modelComplexity:   1,
+    smoothLandmarks:   true,
+    enableSegmentation: false,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence:  0.5
+  });
+
+  pose.onResults(onResults);
+  log('Pose model loaded', 'ok');
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  CONNECT + START
+// ────────────────────────────────────────────────────────────────────────────
+async function connectAndStart() {
+  const fbUrl  = document.getElementById('fb-url').value.trim();
+  const fbKey  = document.getElementById('fb-key').value.trim();
+  const fbPid  = document.getElementById('fb-pid').value.trim();
+  const fbPath = document.getElementById('fb-path').value.trim() || 'arm_angles';
+
+  if (!fbUrl || !fbKey || !fbPid) {
+    log('Fill in all Firebase fields first', 'warn');
+    return;
+  }
+
+  document.getElementById('btn-connect').disabled = true;
+  log('Initializing Firebase...', '');
+
+  try {
+    // Delete previous app if any
+    if (firebase.apps.length) {
+      await Promise.all(firebase.apps.map(a => a.delete()));
+    }
+
+    const app = firebase.initializeApp({
+      apiKey:      fbKey,
+      databaseURL: fbUrl,
+      projectId:   fbPid,
+    });
+
+    db    = firebase.database(app);
+    dbRef = db.ref(fbPath);
+
+    // Test connectivity
+    await dbRef.child('_status').set({ connected: true, connectedAt: Date.now() });
+    setDot('dot-fb', 'active');
+    document.getElementById('fb-path-display').textContent = `Path: ${fbUrl}/${fbPath}`;
+    log(`Firebase connected → ${fbPath}`, 'ok');
+  } catch (err) {
+    log('Firebase init failed: ' + err.message, 'err');
+    setDot('dot-fb', 'warn');
+    document.getElementById('btn-connect').disabled = false;
+    return;
+  }
+
+  // Init pose model
+  await initPose();
+
+  // Start webcam
+  log('Requesting camera...', '');
+  const videoEl = document.getElementById('webcam');
+
+  try {
+    camera = new Camera(videoEl, {
+      onFrame: async () => {
+        await pose.send({ image: videoEl });
+      },
+      width: 1280,
+      height: 720
+    });
+
+    await camera.start();
+    document.getElementById('no-feed').style.display = 'none';
+    setDot('dot-cam', 'active');
+    log('Camera started', 'ok');
+  } catch (err) {
+    log('Camera error: ' + err.message, 'err');
+    setDot('dot-cam', 'warn');
+    document.getElementById('btn-connect').disabled = false;
+    return;
+  }
+
+  streaming = true;
+  startWriteLoop();
+
+  document.getElementById('btn-connect').style.display = 'none';
+  document.getElementById('btn-stop').style.display    = 'block';
+  log('Streaming to Firebase...', 'ok');
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  STOP
+// ────────────────────────────────────────────────────────────────────────────
+async function stopStreaming() {
+  streaming = false;
+  if (writeTimer) clearInterval(writeTimer);
+  if (camera) { camera.stop(); camera = null; }
+  if (dbRef) {
+    await dbRef.child('_status').set({ connected: false, disconnectedAt: Date.now() });
+    dbRef = null;
+  }
+
+  setDot('dot-cam',  '');
+  setDot('dot-pose', '');
+  setDot('dot-fb',   '');
+
+  document.getElementById('no-feed').style.display = 'flex';
+  document.getElementById('btn-stop').style.display    = 'none';
+  document.getElementById('btn-connect').style.display = 'block';
+  document.getElementById('btn-connect').disabled      = false;
+  document.getElementById('fb-path-display').textContent = 'Path: not connected';
+  log('Streaming stopped', 'warn');
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+//  EVENTS
+// ────────────────────────────────────────────────────────────────────────────
+document.getElementById('btn-connect').addEventListener('click', connectAndStart);
+document.getElementById('btn-stop').addEventListener('click',    stopStreaming);
+
+document.getElementById('rate-slider').addEventListener('input', function() {
+  writeIntervalMs = parseInt(this.value);
+  document.getElementById('rate-val').textContent = writeIntervalMs + 'ms';
+  if (streaming) startWriteLoop(); // restart with new interval
+});
+
+log('System ready. Fill Firebase config and click CONNECT.', '');
+</script>
+</body>
+</html>
